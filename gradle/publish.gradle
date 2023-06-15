@@ -68,7 +68,11 @@ project.afterEvaluate {
 
                 def releasesRepoUrl = "https://oss.sonatype.org/service/local/staging/deploy/maven2/"
                 def snapshotsRepoUrl = "https://oss.sonatype.org/content/repositories/snapshots/"
-                url = POM_VERSION_NAME.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
+                if (isLocalRepository == "1") {
+                    url = uri("${System.env.HOME}/.m2/repository")
+                } else {
+                    url = POM_VERSION_NAME.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
+                }
 
                 credentials {
                     username ossrhUsername
@@ -78,7 +82,8 @@ project.afterEvaluate {
         }
     }
 }
-
-signing {
-    sign publishing.publications
+if (isLocalRepository != "1") {
+    signing {
+        sign publishing.publications
+    }
 }
