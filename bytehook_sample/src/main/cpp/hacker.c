@@ -20,9 +20,30 @@
 #define LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, HACKER_TAG, fmt, ##__VA_ARGS__)
 #pragma clang diagnostic pop
 
+// 原本线程参数
+struct ThreadHookeeArgus {
+    void *(*current_func)(void *);
+
+    void *current_arg;
+};
+
+
+//static void *pthread(void *arg) {
+//  struct ThreadHookeeArgus *temp = (struct ThreadHookeeArgus *) arg;
+//  temp->current_func(temp->current_arg);
+//  __android_log_print(ANDROID_LOG_WARN, HACKER_TAG, "%s", "crash 了，但被我抓住了");
+//  return NULL;
+//}
 typedef int (*open_t)(const char *, int, mode_t);
 typedef int (*open_real_t)(const char *, int, mode_t);
 typedef int (*open2_t)(const char *, int);
+typedef int (*close_t)(int);
+typedef int (*pthread_create_t)(const pthread_t *, const pthread_attr_t *,void *(void *), void *);
+typedef int (*pthread_detach_t)(pthread_t);
+typedef void (*pthread_exit_t)(void*);
+typedef int (*pthread_join_t)(pthread_t);
+
+
 
 #define OPEN_DEF(fn)                                                                                         \
   static fn##_t fn##_prev = NULL;                                                                            \
@@ -43,6 +64,15 @@ typedef int (*open2_t)(const char *, int);
 OPEN_DEF(open)
 OPEN_DEF(open_real)
 OPEN_DEF(open2)
+OPEN_DEF(close)
+OPEN_DEF(pthread_join)
+OPEN_DEF(pthread_exit)
+OPEN_DEF(pthread_detach)
+OPEN_DEF(pthread_create)
+
+
+
+
 
 static void debug(const char *sym, const char *pathname, int flags, int fd, void *lr) {
   Dl_info info;
@@ -52,7 +82,22 @@ static void debug(const char *sym, const char *pathname, int flags, int fd, void
   LOG("proxy %s(\"%s\", %d), return FD: %d, called from: %s (%s)", sym, pathname, flags, fd, info.dli_fname,
       info.dli_sname);
 }
+static void debug_close(const char *sym, int flags, int fd, void *lr) {
+    Dl_info info;
+    memset(&info, 0, sizeof(info));
+    dladdr(lr, &info);
 
+    LOG("proxy %s( %d), return RS: %d, called from: %s (%s)", sym,   fd,flags, info.dli_fname,
+        info.dli_sname);
+}
+static void debug_thread(const char *sym,int flags, pthread_t pt, void *lr) {
+  Dl_info info;
+  memset(&info, 0, sizeof(info));
+  dladdr(lr, &info);
+
+  LOG("proxy %s(), return RS: %d, pthread_t：%ld called from: %s (%s)", sym,   flags, pt,info.dli_fname,
+      info.dli_sname);
+}
 static int open_proxy_auto(const char *pathname, int flags, mode_t modes) {
   // In automatic mode, if you need to call the original function,
   // please always use the BYTEHOOK_CALL_PREV() macro.
@@ -80,6 +125,52 @@ static int open2_proxy_auto(const char *pathname, int flags) {
   return fd;
 }
 
+static int close_proxy_auto(int fd) {
+    int rs = BYTEHOOK_CALL_PREV(close_proxy_auto, close_t, fd);
+    debug_close("close", rs, fd, BYTEHOOK_RETURN_ADDRESS());
+    BYTEHOOK_POP_STACK();
+    return rs;
+}
+static int pthread_join_proxy_auto(pthread_t pt) {
+  int rs = BYTEHOOK_CALL_PREV(pthread_join_proxy_auto, pthread_join_t, pt);
+  debug_thread("pthread_join", rs,pt, BYTEHOOK_RETURN_ADDRESS());
+  BYTEHOOK_POP_STACK();
+  return rs;
+}
+static int pthread_detach_proxy_auto(pthread_t pt) {
+  int rs = BYTEHOOK_CALL_PREV(pthread_detach_proxy_auto, pthread_detach_t, pt);
+  debug_thread("pthread_detach", rs,pt, BYTEHOOK_RETURN_ADDRESS());
+  BYTEHOOK_POP_STACK();
+  return rs;
+}
+
+static void pthread_exit_proxy_auto(void* return_value ) {
+   BYTEHOOK_CALL_PREV(pthread_exit_proxy_auto, pthread_exit_t,return_value);
+  debug_thread("pthread_exit", 0, (pthread_t) NULL, BYTEHOOK_RETURN_ADDRESS());
+  BYTEHOOK_POP_STACK();
+  return;
+}
+static int pthread_create_proxy_auto(pthread_t *thread, pthread_attr_t *attr,
+                               void *(*start_routine)(void *), void *arg) {
+//  struct ThreadHookeeArgus *params;
+//  params = (struct ThreadHookeeArgus *) malloc(sizeof(struct ThreadHookeeArgus));
+//  params->current_func = start_routine;
+//  params->current_arg = arg;
+
+//  __android_log_print(ANDROID_LOG_INFO, HACKER_TAG, "%s", "call pthread_create");
+    int rs = BYTEHOOK_CALL_PREV(pthread_create_proxy_auto,pthread_create_t, thread, attr,start_routine,(void *) arg);
+  //int rs = BYTEHOOK_CALL_PREV(pthread_create_proxy_auto,pthread_create_t, thread, attr,pthread,(void *) params);
+  debug_thread("pthread_create", rs, (pthread_t) thread, BYTEHOOK_RETURN_ADDRESS());
+  BYTEHOOK_POP_STACK();
+
+  return rs;
+}
+
+
+
+
+
+
 static int open_proxy_manual(const char *pathname, int flags, mode_t modes) {
   int fd = open_prev(pathname, flags, modes);
   debug("open", pathname, flags, fd, BYTEHOOK_RETURN_ADDRESS());
@@ -96,6 +187,12 @@ static int open2_proxy_manual(const char *pathname, int flags) {
   int fd = open2_prev(pathname, flags);
   debug("__open_2", pathname, flags, fd, BYTEHOOK_RETURN_ADDRESS());
   return fd;
+}
+
+static int close_proxy_manual(int fd) {
+    int rs = close_prev(fd);
+    debug_close("close", rs, fd, BYTEHOOK_RETURN_ADDRESS());
+    return fd;
 }
 
 static bool allow_filter(const char *caller_path_name, void *arg) {
@@ -124,15 +221,26 @@ static int hacker_hook(JNIEnv *env, jobject thiz, jint type) {
 
   if (NULL != open_stub || NULL != open_real_stub || NULL != open2_stub) return -1;
 
-  void *open_proxy, *open_real_proxy, *open2_proxy;
+  void *open_proxy, *open_real_proxy, *open2_proxy,*close_proxy,*pthread_join_proxy,*pthread_detach_proxy,*pthread_exit_proxy,*pthread_create_proxy;
+  //void *open_proxy, *open_real_proxy, *open2_proxy,*close_proxy;
   if (BYTEHOOK_MODE_MANUAL == bytehook_get_mode()) {
     open_proxy = (void *)open_proxy_manual;
     open_real_proxy = (void *)open_real_proxy_manual;
     open2_proxy = (void *)open2_proxy_manual;
+    close_proxy= (void *) close_proxy_manual;
+    pthread_join_proxy=(void *) pthread_join_proxy_auto;
+    pthread_detach_proxy=(void *) pthread_detach_proxy_auto;
+    pthread_exit_proxy=(void *) pthread_exit_proxy_auto;
+    pthread_create_proxy=(void *) pthread_create_proxy_auto;
   } else {
     open_proxy = (void *)open_proxy_auto;
     open_real_proxy = (void *)open_real_proxy_auto;
     open2_proxy = (void *)open2_proxy_auto;
+      close_proxy= (void *) close_proxy_auto;
+    pthread_join_proxy=(void *) pthread_join_proxy_auto;
+    pthread_detach_proxy=(void *) pthread_detach_proxy_auto;
+    pthread_exit_proxy=(void *) pthread_exit_proxy_auto;
+    pthread_create_proxy=(void *) pthread_create_proxy_auto;
   }
 
   if (0 == type) {
@@ -141,6 +249,7 @@ static int hacker_hook(JNIEnv *env, jobject thiz, jint type) {
                                           open_real_hooked_callback, NULL);
     open2_stub =
         bytehook_hook_single("libhookee.so", NULL, "__open_2", open2_proxy, open2_hooked_callback, NULL);
+    close_stub = bytehook_hook_single("libhookee.so", NULL, "close", close_proxy,close_hooked_callback, NULL);
   } else if (1 == type) {
     open_stub =
         bytehook_hook_partial(allow_filter, NULL, NULL, "open", open_proxy, open_hooked_callback, NULL);
@@ -148,6 +257,14 @@ static int hacker_hook(JNIEnv *env, jobject thiz, jint type) {
                                            open_real_hooked_callback, NULL);
     open2_stub =
         bytehook_hook_partial(allow_filter, NULL, NULL, "__open_2", open2_proxy, open2_hooked_callback, NULL);
+      close_stub =
+              bytehook_hook_partial(allow_filter, NULL, NULL, "close", close_proxy, close_hooked_callback, NULL);
+    pthread_join_stub = bytehook_hook_partial(allow_filter, NULL, NULL, "pthread_join", pthread_join_proxy, pthread_join_hooked_callback, NULL);
+    pthread_detach_stub = bytehook_hook_partial(allow_filter, NULL, NULL, "pthread_detach", pthread_detach_proxy, pthread_detach_hooked_callback, NULL);
+    pthread_exit_stub = bytehook_hook_partial(allow_filter, NULL, NULL, "pthread_exit", pthread_exit_proxy, pthread_exit_hooked_callback, NULL);
+    pthread_create_stub = bytehook_hook_partial(allow_filter, NULL, NULL, "pthread_create", pthread_create_proxy, pthread_create_hooked_callback, NULL);
+
+
   } else if (2 == type) {
     // Here we are not really using bytehook_hook_all().
     //
@@ -171,6 +288,12 @@ static int hacker_hook(JNIEnv *env, jobject thiz, jint type) {
                                            open_real_proxy, open_real_hooked_callback, NULL);
     open2_stub = bytehook_hook_partial(allow_filter_for_hook_all, NULL, NULL, "__open_2", open2_proxy,
                                        open2_hooked_callback, NULL);
+      close_stub = bytehook_hook_partial(allow_filter_for_hook_all, NULL, NULL, "close", close_proxy,close_hooked_callback, NULL);
+    pthread_join_stub = bytehook_hook_partial(allow_filter_for_hook_all, NULL, NULL, "pthread_join", pthread_join_proxy, pthread_join_hooked_callback, NULL);
+    pthread_detach_stub = bytehook_hook_partial(allow_filter_for_hook_all, NULL, NULL, "pthread_detach", pthread_detach_proxy, pthread_detach_hooked_callback, NULL);
+    pthread_exit_stub = bytehook_hook_partial(allow_filter_for_hook_all, NULL, NULL, "pthread_exit", pthread_exit_proxy, pthread_exit_hooked_callback, NULL);
+    pthread_create_stub = bytehook_hook_partial(allow_filter_for_hook_all, NULL, NULL, "pthread_create", pthread_create_proxy, pthread_create_hooked_callback, NULL);
+
   }
 
   return 0;
@@ -191,6 +314,27 @@ static int hacker_unhook(JNIEnv *env, jobject thiz) {
     bytehook_unhook(open2_stub);
     open2_stub = NULL;
   }
+    if (NULL != close_stub) {
+        bytehook_unhook(close_stub);
+        close_stub = NULL;
+    }
+  if (NULL != pthread_exit_stub) {
+    bytehook_unhook(pthread_exit_stub);
+    pthread_exit_stub = NULL;
+  }
+  if (NULL != pthread_join_stub) {
+    bytehook_unhook(pthread_join_stub);
+    pthread_join_stub = NULL;
+  }
+  if (NULL != pthread_detach_stub) {
+    bytehook_unhook(pthread_detach_stub);
+    pthread_detach_stub = NULL;
+  }
+  if (NULL != pthread_create_stub) {
+    bytehook_unhook(pthread_create_stub);
+    pthread_create_stub = NULL;
+  }
+
 
   return 0;
 }
