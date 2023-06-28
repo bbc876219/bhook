@@ -5,6 +5,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 
+import com.bbc.NativeHookeeA;
 import com.bytedance.android.bytehook.ByteHook;
 
 import java.io.BufferedReader;
@@ -54,7 +55,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void onTestClick(View view) {
-        NativeHookee.test();
+        NativeHookeeA.test();
+        new Thread("java thread"){
+            @Override
+            public void run() {
+                Log.i(TAG, "run() called start ");
+                Log.d(TAG, String.format("run() called thread id=%d pid=%d  tid=%d  name=%s  priority=%d ",getId(),getName(),getPriority()));
+                Log.w(TAG, "run() called start ");
+            }
+        }.start();
     }
 
     public void onGetRecordsClick(View view) {

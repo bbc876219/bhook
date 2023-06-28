@@ -6,7 +6,7 @@
 #include "threads.h"
 
 #define HOOKEE_JNI_VERSION    JNI_VERSION_1_6
-#define HOOKEE_JNI_CLASS_NAME "com/bytedance/android/bytehook/sample/NativeHookee"
+#define HOOKEE_JNI_CLASS_NAME "com/bbc/NativeHookeeA"
 #define HOOKEE_TAG            "bytehook_tag"
 
 #pragma clang diagnostic push
@@ -18,7 +18,7 @@
 
 
  static void thread_1(void ){
-     LOG("2B我是线程一 开始");
+     LOG("我是线程一 开始");
     int i = 0;
     while (1) {
         i+=1;
@@ -28,24 +28,24 @@
             break;
         }
     }
-    LOG("2B我是线程一 结束");
+    LOG("我是线程一 结束");
 
 
 
 }
 
  static void thread_2(void){
-     LOG("2B我是线程二 开始");
+     LOG("我是线程二 开始");
     int i = 0;
     while (1) {
         i+=1;
         sleep(2);
-        LOG("2B我是线程二 %d次\n",i);
+        LOG("我是线程二 %d次\n",i);
         if (i>5){
             break;
         }
     }
-     LOG("2B我是线程二 结束");
+     LOG("我是线程二 结束");
 }
 
 
@@ -55,7 +55,7 @@
     while (3) {
         i+=1;
         sleep(3);
-        LOG("2B我是线程三 %d次\n",i);
+        LOG("我是线程三 %d次\n",i);
         if (i>5){
             break;
         }
@@ -100,7 +100,9 @@ static void hookee_test(JNIEnv *env, jobject thiz) {
     if (ret != 0) {
         LOG("pthread_detach fail");
     }
-
+    pthread_setname_np(star_location_1,"thread_line_1");
+    pthread_setname_np(star_location_2,"thread_line_2");
+    pthread_setname_np(star_location_3,"thread_line_3");
     //子线程设置分离属性,则pthread_join不再阻塞,立刻返回
     /*等待线程结束*/
     ret = pthread_join(star_location_1, NULL);
