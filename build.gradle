@@ -17,7 +17,7 @@ ext {
     cmakeVersion = "3.22.1"
     abiFilters = "armeabi-v7a,arm64-v8a,x86,x86_64"
     useASAN = false
-    dependencyOnLocalLibrary = false
+    dependencyOnLocalLibrary = true
 
     POM_GROUP_ID = "com.bytedance"
     POM_ARTIFACT_ID = "bytehook"
